@@ -1,0 +1,9 @@
+- options.cpp-namespace: tls_scheme
+
+- name: Connect
+  id: 10
+  fields:
+    - {name: subject, type: string}
+
+- name: Disconnect
+  id: 20
