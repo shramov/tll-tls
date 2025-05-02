@@ -5,8 +5,10 @@ import decorator
 import pytest
 import socket
 import ssl
+import struct
 
-from tll.test_util import ports
+from tll.error import TLLError
+from tll.test_util import Accum, ports
 
 @decorator.decorator
 def asyncloop_run(f, asyncloop, *a, **kw):
@@ -27,15 +29,15 @@ async def test(asyncloop):
     assert s.unpack(m).subject == '/O=tll-tls/OU=test/CN=client'
     addr = m.addr
 
-    s.post(b'xxx', addr=addr)
+    s.post(b'xxx', msgid=10, seq=100, addr=addr)
     m = await c.recv()
 
-    assert m.data.tobytes() == b'xxx'
+    assert (m.msgid, m.seq, m.data.tobytes()) == (10, 100, b'xxx')
 
-    c.post(b'yyy')
+    c.post(b'yyy', msgid=20, seq=200)
     m = await s.recv()
 
-    assert m.data.tobytes() == b'yyy'
+    assert (m.msgid, m.seq, m.data.tobytes()) == (20, 200, b'yyy')
 
 @asyncloop_run
 async def test_server(asyncloop):
@@ -70,13 +72,14 @@ async def test_server(asyncloop):
     assert m.type == m.Type.Control
     assert s.unpack(m).subject == '/O=tll-tls/OU=test/CN=client'
 
-    s.post(b'xxx', addr=m.addr)
+    s.post(b'xxx', msgid=10, seq=100, addr=m.addr)
+    assert ssock.read(16) == struct.pack('Iiq', 3, 10, 100)
     assert ssock.read() == b'xxx'
 
-    ssock.write(b'yyy')
+    ssock.write(struct.pack('Iiq', 3, 20, 200) + b'yyy')
     m = await s.recv()
 
-    assert m.data.tobytes() == b'yyy'
+    assert (m.msgid, m.seq, m.data.tobytes()) == (20, 200, b'yyy')
 
 @pytest.mark.parametrize('cert', [None, 'reject'])
 def test_server_reject(context, cert):
@@ -111,3 +114,64 @@ def test_server_reject(context, cert):
             pass
 
     with pytest.raises(ssl.SSLError): ssock.read() # Connection terminated
+
+def test_large(context):
+    s = Accum(f'tls://::1:{ports.TCP6};mode=server', name='server', dump='frame', cert='cert/server.pem', key='cert/server.key', ca='cert/ca.pem', context=context)
+    c = Accum(f'tls://::1:{ports.TCP6};mode=client', name='client', dump='frame', cert='cert/client.pem', key='cert/client.key', ca='cert/ca.pem', context=context)
+
+    s.open()
+    c.open()
+
+    for _ in range(100):
+        if c.state == c.State.Active and s.result != []:
+            break
+        c.process()
+        for i in s.children:
+            i.process()
+
+    assert [s.unpack(m).subject for m in s.result] == ['/O=tll-tls/OU=test/CN=client']
+    addr = s.result[-1].addr
+
+    s.post(b'abcdefgh' * 7 * 1024, addr=addr)
+
+    for _ in range(5): # Frame + 4 records
+        c.process()
+    assert [m.data.tobytes() for m in c.result] == [b'abcdefgh' * 7 * 1024]
+
+def test_buffered(context):
+    s = Accum(f'tls://::1:{ports.TCP6};mode=server', name='server', dump='frame', cert='cert/server.pem', key='cert/server.key', ca='cert/ca.pem', context=context, sndbuf='32kb')
+    c = Accum(f'tls://::1:{ports.TCP6};mode=client', name='client', dump='frame', cert='cert/client.pem', key='cert/client.key', ca='cert/ca.pem', context=context)
+
+    s.open()
+    c.open()
+
+    for _ in range(100):
+        if c.state == c.State.Active and s.result != []:
+            break
+        c.process()
+        for i in s.children:
+            i.process()
+
+    assert [s.unpack(m).subject for m in s.result] == ['/O=tll-tls/OU=test/CN=client']
+    addr = s.result[-1].addr
+
+    for i in range(10):
+        try:
+            s.post(b'0123456789abcde' * 1024, seq=i, addr=addr) # 15kb to fit into SSL packet
+        except TLLError:
+            break
+    assert (s.children[-1].dcaps & s.DCaps.PollOut) == s.DCaps.PollOut
+
+    for _ in range(i):
+        c.process()
+
+    assert [m.seq for m in c.result] == list(range(i - 1))
+    c.process()
+    assert [m.seq for m in c.result] == list(range(i - 1))
+
+    s.children[-1].process()
+    c.process()
+    assert [m.seq for m in c.result] == list(range(i))
+
+    for j in range(i):
+        assert (c.result[j].seq, c.result[j].data.tobytes()) == (j, b'0123456789abcde' * 1024)

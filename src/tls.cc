@@ -1,3 +1,4 @@
+#include <tll/channel/frame.h>
 #include <tll/channel/tcp.h>
 #include <tll/channel/tcp.hpp>
 
@@ -142,6 +143,7 @@ class TLSSocket : public tll::channel::TcpSocket<T>
 	int _post_data(const tll_msg_t *msg, int flags);
 	int _process(long timeout, int flags);
 
+	int _process_pending();
 	int _process_read();
 	int _process_write();
 	int _process_handshake();
@@ -177,6 +179,7 @@ class TLSClient : public tll::channel::TcpClient<TLSClient, TLSSocket<TLSClient>
 {
 	using Base = tll::channel::TcpClient<TLSClient, TLSSocket<TLSClient>>;
 	SSLCommon _common;
+
  public:
 	static constexpr std::string_view param_prefix() { return "tls"; }
 	static constexpr std::string_view channel_protocol() { return "tls"; } // Only visible in logs
@@ -316,21 +319,33 @@ int TLSSocket<T>::_post_data(const tll_msg_t *msg, int flags)
 	if (this->_wbuf.size())
 		return EAGAIN;
 
-	this->_log.trace("Post {} bytes of data", msg->size);
-	auto r = SSL_write(_ssl.get(), msg->data, msg->size);
+	using Frame = tll_frame_t;
+	const auto full_size = sizeof(Frame) + msg->size;
+	if (this->_wbuf.available() < full_size)
+		this->_wbuf.resize(this->_wbuf.size() + full_size);
+	auto frame = static_cast<Frame *>(this->_wbuf.end());
+	tll::frame::FrameT<Frame>::write(msg, frame);
+	memcpy(frame + 1, msg->data, msg->size);
+
+	if (this->_wbuf.size()) {
+		this->_wbuf.extend(full_size);
+		return 0;
+	}
+
+	this->_log.trace("Post {} bytes of data", full_size);
+	auto r = SSL_write(_ssl.get(), frame, full_size);
 	if (r >= 0) {
-		if ((size_t) r == msg->size)
+		if ((size_t) r == full_size)
 			return 0;
-		this->_log.debug("Partial send, store {} bytes of data", msg->size - r);
-		this->_wbuf.resize(msg->size - r);
-		memcpy(this->_wbuf.data(), r + (const char *) msg->data, msg->size - r);
+		this->_log.debug("Partial send, store {} bytes of data", full_size - r);
+		this->_wbuf.extend(full_size);
+		this->_wbuf.done(r);
 		return 0;
 	}
 
 	if (r = _handle_error("Write", r); r == EAGAIN) {
-		this->_log.debug("Partial send, store {} bytes of data", msg->size);
-		this->_wbuf.resize(msg->size);
-		memcpy(this->_wbuf.data(), msg->data, msg->size);
+		this->_log.debug("Partial send, store {} bytes of data", full_size);
+		this->_wbuf.extend(full_size);
 		return 0;
 	} else
 		return r;
@@ -342,28 +357,58 @@ int TLSSocket<T>::_process_write()
 	if (this->_wbuf.size() == 0)
 		return 0;
 	auto r = SSL_write(_ssl.get(), this->_wbuf.data(), this->_wbuf.size());
-	if (r) {
-		this->_wbuf.resize(0);
+	if (r >= 0) {
+		this->_wbuf.done(r);
 		return 0;
 	}
 	return _handle_error("Write", r);
 }
 
 template <typename T>
+int TLSSocket<T>::_process_pending()
+{
+	this->_log.debug("Check pending data ({} stored)", this->_rbuf.size());
+	using Frame = tll_frame_t;
+	auto frame = this->_rbuf.template dataT<Frame>();
+	if (!frame)
+		return EAGAIN;
+	this->_log.debug("Frame available, check for data (size: {}, msgid: {}, seq: {})", frame->size, frame->msgid, frame->seq);
+	// Check for pending data
+	const auto full_size = sizeof(Frame) + frame->size;
+	if (this->_rbuf.size() < full_size) {
+		if (full_size > this->_rbuf.capacity())
+			return this->_log.fail(EMSGSIZE, "Message size {} too large", full_size);
+		this->_dcaps_pending(SSL_pending(_ssl.get()));
+		return EAGAIN;
+	}
+
+	tll_msg_t msg = { TLL_MESSAGE_DATA };
+	tll::frame::FrameT<Frame>::read(&msg, frame);
+	msg.data = this->_rbuf.template dataT<void>(sizeof(Frame), 0);
+	msg.addr = this->_msg_addr;
+	msg.time = this->_timestamp.count();
+	this->rdone(full_size);
+	this->_dcaps_pending(this->_rbuf.template dataT<Frame>() || SSL_pending(_ssl.get()));
+	this->_callback_data(&msg);
+	return 0;
+}
+
+template <typename T>
 int TLSSocket<T>::_process_read()
 {
+	if (this->_rbuf._offset >= this->_rbuf.capacity() / 2 || this->_rbuf.available() == 0)
+		this->_rbuf.force_shift();
+
 	size_t size = 0;
-	if (auto r = SSL_read_ex(_ssl.get(), this->_rbuf.data(), this->_rbuf.capacity(), &size); r <= 0)
+	if (auto r = SSL_read_ex(_ssl.get(), this->_rbuf.end(), this->_rbuf.available(), &size); r <= 0)
 		return _handle_error("Read", r);
 
 	if (size == 0)
 		return EAGAIN;
-	tll_msg_t msg = {};
-	msg.data = this->_rbuf.data();
-	msg.size = size;
-	this->_dcaps_pending(SSL_pending(_ssl.get()));
-	this->_callback_data(&msg);
-	return 0;
+	this->_log.debug("Got {} bytes of data ({} already stored)", size, this->_rbuf.size());
+	this->_rbuf.extend(size);
+
+	return _process_pending();
 }
 
 template <typename T>
@@ -382,6 +427,7 @@ int TLSSocket<T>::_process_handshake()
 	if (SSL_is_init_finished(_ssl.get())) {
 		this->_log.info("Handshake finished");
 		this->state(tll::state::Active);
+		this->_dcaps_pending(SSL_pending(_ssl.get()));
 		this->channelT()->_on_handshake();
 		return 0;
 	}
@@ -423,6 +469,8 @@ int TLSSocket<T>::_process(long timeout, int flags)
 		return _process_handshake();
 	}
 	if (auto r = _process_write(); r)
+		return r;
+	if (auto r = _process_pending(); r != EAGAIN)
 		return r;
 	return _process_read();
 }
