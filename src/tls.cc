@@ -9,6 +9,7 @@
 
 #include "tls.h"
 #include "scheme/tls.h"
+#include "scheme/tls-client.h"
 
 struct OpenSSL_delete {
 	void operator ()(EVP_PKEY *ptr) const { EVP_PKEY_free(ptr); }
@@ -183,15 +184,22 @@ class TLSClient : public tll::channel::TcpClient<TLSClient, TLSSocket<TLSClient>
  public:
 	static constexpr std::string_view param_prefix() { return "tls"; }
 	static constexpr std::string_view channel_protocol() { return "tls"; } // Only visible in logs
-									       //
+
 	int _init(const tll::Channel::Url &url, tll::Channel * master)
 	{
+		if (auto r = Base::_init(url, master); r)
+			return r;
+
 		auto reader = channel_props_reader(url);
 		if (_common.init(_log, reader))
 			return _log.fail(EINVAL, "Failed to parse common SSL parameters");
 		if (!reader)
 			return _log.fail(EINVAL, "Invalid url: {}", reader.error());
-		return Base::_init(url, master);
+
+		_scheme_control.reset(context().scheme_load(tls_client_scheme::scheme_string));
+		if (!_scheme_control.get())
+			return _log.fail(EINVAL, "Failed to load control scheme");
+		return 0;
 	}
 
 	int _open(const tll::ConstConfig &cfg)
@@ -340,12 +348,14 @@ int TLSSocket<T>::_post_data(const tll_msg_t *msg, int flags)
 		this->_log.debug("Partial send, store {} bytes of data", full_size - r);
 		this->_wbuf.extend(full_size);
 		this->_wbuf.done(r);
+		this->_on_output_full();
 		return 0;
 	}
 
 	if (r = _handle_error("Write", r); r == EAGAIN) {
 		this->_log.debug("Partial send, store {} bytes of data", full_size);
 		this->_wbuf.extend(full_size);
+		this->_on_output_full();
 		return 0;
 	} else
 		return r;
@@ -359,6 +369,8 @@ int TLSSocket<T>::_process_write()
 	auto r = SSL_write(_ssl.get(), this->_wbuf.data(), this->_wbuf.size());
 	if (r >= 0) {
 		this->_wbuf.done(r);
+		if (this->_wbuf.size() == 0)
+			this->_on_output_ready();
 		return 0;
 	}
 	return _handle_error("Write", r);
@@ -440,10 +452,10 @@ int TLSSocket<T>::_handle_error(std::string_view op, int r)
 {
 	switch (SSL_get_error(_ssl.get(), r)) {
 	case SSL_ERROR_WANT_READ:
-		this->_log.info("Want read");
+		this->_log.debug("Want read");
 		return EAGAIN;
 	case SSL_ERROR_WANT_WRITE:
-		this->_log.info("Want write");
+		this->_log.debug("Want write");
 		this->_update_dcaps(tll::dcaps::CPOLLOUT);
 		return EAGAIN;
 	case SSL_ERROR_ZERO_RETURN:

@@ -1,0 +1,6 @@
+- options.cpp-namespace: tls_client_scheme
+- name: WriteFull
+  id: 30
+
+- name: WriteReady
+  id: 40

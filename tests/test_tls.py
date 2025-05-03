@@ -154,24 +154,28 @@ def test_buffered(context):
 
     assert [s.unpack(m).subject for m in s.result] == ['/O=tll-tls/OU=test/CN=client']
     addr = s.result[-1].addr
+    s.result = []
 
     for i in range(10):
-        try:
-            s.post(b'0123456789abcde' * 1024, seq=i, addr=addr) # 15kb to fit into SSL packet
-        except TLLError:
+        s.post(b'0123456789abcde' * 1024, seq=i, addr=addr) # 15kb to fit into SSL packet
+        if s.result:
             break
+    assert [(m.type, m.msgid) for m in s.result] == [(s.Type.Control, s.scheme_control['WriteFull'].msgid)]
     assert (s.children[-1].dcaps & s.DCaps.PollOut) == s.DCaps.PollOut
 
     for _ in range(i):
         c.process()
 
-    assert [m.seq for m in c.result] == list(range(i - 1))
-    c.process()
-    assert [m.seq for m in c.result] == list(range(i - 1))
-
-    s.children[-1].process()
+    assert [m.seq for m in c.result] == list(range(i))
     c.process()
     assert [m.seq for m in c.result] == list(range(i))
 
-    for j in range(i):
+    s.result = []
+    s.children[-1].process()
+    assert [(m.type, m.msgid) for m in s.result] == [(s.Type.Control, s.scheme_control['WriteReady'].msgid)]
+
+    c.process()
+    assert [m.seq for m in c.result] == list(range(i + 1))
+
+    for j in range(i + 1):
         assert (c.result[j].seq, c.result[j].data.tobytes()) == (j, b'0123456789abcde' * 1024)

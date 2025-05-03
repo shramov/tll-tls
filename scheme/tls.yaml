@@ -1,4 +1,5 @@
 - options.cpp-namespace: tls_scheme
+  import.client: yaml://scheme/tls-client.yaml
 
 - name: Connect
   id: 10
