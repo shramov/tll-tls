@@ -415,14 +415,16 @@ int TLSSocket<T>::_process_read()
 	if (this->_rbuf._offset >= this->_rbuf.capacity() / 2 || this->_rbuf.available() == 0)
 		this->_rbuf.force_shift();
 
-	size_t size = 0;
-	if (auto r = SSL_read_ex(_ssl.get(), this->_rbuf.end(), this->_rbuf.available(), &size); r <= 0)
+	if (auto r = SSL_read(_ssl.get(), this->_rbuf.end(), this->_rbuf.available()); r < 0) {
 		return _handle_error("Read", r);
-
-	if (size == 0)
+	} else if (r == 0) {
+		this->_log.debug("Connection closed");
+		this->channelT()->_on_close();
 		return EAGAIN;
-	this->_log.debug("Got {} bytes of data ({} already stored)", size, this->_rbuf.size());
-	this->_rbuf.extend(size);
+	} else {
+		this->_log.debug("Got {} bytes of data ({} already stored)", r, this->_rbuf.size());
+		this->_rbuf.extend(r);
+	}
 
 	return _process_pending();
 }
