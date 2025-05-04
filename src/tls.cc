@@ -7,6 +7,7 @@
 #include <openssl/store.h>
 #include <openssl/x509.h>
 
+#include "tll/tls/bio-nosignal.h"
 #include "tls.h"
 #include "scheme/tls.h"
 #include "scheme/tls-client.h"
@@ -306,9 +307,12 @@ int TLSSocket<T>::_open_ssl(SSL_CTX * ctx, bool client)
 	//SSL_set_msg_callback(_ssl.get(), SSL_trace);
 	//SSL_set_msg_callback_arg(_ssl.get(), BIO_new_fp(stdout, 0));
 
-	if (!SSL_set_fd(_ssl.get(), this->fd()))
-		return this->_log.fail(EINVAL, "Failed to set SSL fd {}: {}", this->fd(), _ssl_error());
-	BIO_set_close(SSL_get_rbio(_ssl.get()), BIO_NOCLOSE);
+	auto bio = BIO_new(tll_tls_bio_nosignal());
+	if (!bio)
+		return this->_log.fail(EINVAL, "Failed to create BIO: {}", _ssl_error());
+	BIO_set_fd(bio, this->internal.fd, 0);
+	SSL_set_bio(_ssl.get(), bio, bio);
+	//BIO_set_close(SSL_get_rbio(_ssl.get()), BIO_NOCLOSE);
 	int r = 0;
 	if (client)
 		r = SSL_connect(_ssl.get());

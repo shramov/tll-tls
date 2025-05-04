@@ -1,4 +1,4 @@
-project('tll-tls', 'cpp'
+project('tll-tls', 'c', 'cpp'
 	, version: '0.0.0'
 	, license: 'MIT'
 	, default_options: ['cpp_std=c++2a', 'werror=true', 'optimization=2']
@@ -11,7 +11,7 @@ ssl = dependency('openssl')
 tll = dependency('tll')
 
 shared_library('tll-tls'
-	, ['src/module.cc', 'src/tls.cc']
+	, ['src/module.cc', 'src/tls.cc', 'src/nosignal.c']
 	, include_directories : include
 	, dependencies : [fmt, ssl, tll]
 	, install : true
