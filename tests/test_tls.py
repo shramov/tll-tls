@@ -179,3 +179,23 @@ def test_buffered(context):
 
     for j in range(i + 1):
         assert (c.result[j].seq, c.result[j].data.tobytes()) == (j, b'0123456789abcde' * 1024)
+
+@asyncloop_run
+async def test_frame_none(asyncloop):
+    s = asyncloop.Channel(f'tls://::1:{ports.TCP6};mode=server;frame=none', name='server', dump='yes', cert='cert/server.pem', key='cert/server.key', ca='cert/ca.pem')
+    c = asyncloop.Channel(f'tls://::1:{ports.TCP6};mode=client;frame=none', name='client', dump='yes', cert='cert/client.pem', key='cert/client.key', ca='cert/ca.pem')
+
+    s.open()
+    c.open()
+
+    assert await c.recv_state() == c.State.Active
+    m = await s.recv()
+    assert m.type == m.Type.Control
+
+    c.post(b'abc', seq=1, msgid=10)
+    c.post(b'def', seq=2, msgid=20)
+
+    m = await s.recv()
+    assert (m.msgid, m.seq, m.data.tobytes()) == (0, 0, b'abc')
+    m = await s.recv()
+    assert (m.msgid, m.seq, m.data.tobytes()) == (0, 0, b'def')

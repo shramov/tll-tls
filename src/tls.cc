@@ -22,6 +22,7 @@ class TLSClient : public tll::channel::TcpClient<TLSClient, TLSSocket<TLSClient>
 			return r;
 
 		auto reader = channel_props_reader(url);
+		_frame = reader.getT("frame", Frame::Std, {{"none", Frame::None}, {"std", Frame::Std}, {"l4m4s8", Frame::Std}});
 		if (_common.init(_log, reader))
 			return _log.fail(EINVAL, "Failed to parse common SSL parameters");
 		if (!reader)
@@ -42,7 +43,7 @@ class TLSClient : public tll::channel::TcpClient<TLSClient, TLSSocket<TLSClient>
 
 	int _on_connect()
 	{
-		if (auto r = _open_ssl(_common.ssl_ctx.get(), true); r)
+		if (auto r = _open_ssl(_common.ssl_ctx.get(), true, _frame); r)
 			return r;
 		_dcaps_poll(tll::dcaps::CPOLLIN);
 		return 0;
@@ -57,6 +58,7 @@ class TLSServer : public tll::channel::TcpServer<TLSServer, Term<TLSSocket>>
 {
 	using Base = tll::channel::TcpServer<TLSServer, Term<TLSSocket>>;
 	SSLCommon _common;
+	Frame _frame = Frame::Std;
 
  public:
 	static constexpr std::string_view param_prefix() { return "tls"; }
@@ -68,6 +70,7 @@ class TLSServer : public tll::channel::TcpServer<TLSServer, Term<TLSSocket>>
 			return r;
 
 		auto reader = channel_props_reader(url);
+		_frame = reader.getT("frame", Frame::Std, {{"none", Frame::None}, {"std", Frame::Std}, {"l4m4s8", Frame::Std}});
 		if (_common.init(_log, reader))
 			return _log.fail(EINVAL, "Failed to parse common SSL parameters");
 		if (!reader)
@@ -91,7 +94,7 @@ class TLSServer : public tll::channel::TcpServer<TLSServer, Term<TLSSocket>>
 		auto tlsc = tll::channel_cast<Term<TLSSocket>>(c);
 		if (!tlsc)
 			return _log.fail(EINVAL, "Can not cast socket channel to TLSSocket");
-		if (auto r = tlsc->_open_ssl(_common.ssl_ctx.get(), false); r)
+		if (auto r = tlsc->_open_ssl(_common.ssl_ctx.get(), false, _frame); r)
 			return r;
 		return Base::_on_accept(c);
 	}

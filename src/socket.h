@@ -16,6 +16,8 @@
 
 namespace tll::tls {
 
+enum class Frame { None, Std };
+
 struct OpenSSL_delete {
 	void operator ()(EVP_PKEY *ptr) const { EVP_PKEY_free(ptr); }
 	void operator ()(OSSL_STORE_CTX *ptr) const { OSSL_STORE_close(ptr); }
@@ -136,6 +138,7 @@ class TLSSocket : public tll::channel::TcpSocket<T>
  protected:
 	std::unique_ptr<SSL, OpenSSL_delete> _ssl;
 	SSLErrbuf _ssl_error;
+	Frame _frame = Frame::Std;
 
  public:
 	using Base = tll::channel::TcpSocket<T>;
@@ -145,7 +148,7 @@ class TLSSocket : public tll::channel::TcpSocket<T>
 
 	bool with_ssl() const { return _ssl.get(); }
 
-	int _open_ssl(SSL_CTX * ctx, bool client);
+	int _open_ssl(SSL_CTX * ctx, bool client, Frame frame);
 
 	int _post_data(const tll_msg_t *msg, int flags);
 	int _process(long timeout, int flags);
@@ -180,9 +183,10 @@ class TLSSocket : public tll::channel::TcpSocket<T>
 };
 
 template <typename T>
-int TLSSocket<T>::_open_ssl(SSL_CTX * ctx, bool client)
+int TLSSocket<T>::_open_ssl(SSL_CTX * ctx, bool client, Frame frame)
 {
 
+	_frame = frame;
 	this->_log.debug("Initialize SSL object for fd {}", this->fd());
 	_ssl.reset(SSL_new(ctx));
 	if (!_ssl)
@@ -215,13 +219,20 @@ int TLSSocket<T>::_post_data(const tll_msg_t *msg, int flags)
 	if (this->_wbuf.size())
 		return EAGAIN;
 
-	using Frame = tll_frame_t;
-	const auto full_size = sizeof(Frame) + msg->size;
-	if (this->_wbuf.available() < full_size)
-		this->_wbuf.resize(this->_wbuf.size() + full_size);
-	auto frame = static_cast<Frame *>(this->_wbuf.end());
-	tll::frame::FrameT<Frame>::write(msg, frame);
-	memcpy(frame + 1, msg->data, msg->size);
+	size_t full_size = msg->size;
+	if (_frame == Frame::Std) {
+		using Frame = tll_frame_t;
+		full_size += sizeof(Frame);
+		if (this->_wbuf.available() < full_size)
+			this->_wbuf.resize(this->_wbuf.size() + full_size);
+		auto frame = static_cast<Frame *>(this->_wbuf.end());
+		tll::frame::FrameT<Frame>::write(msg, frame);
+		memcpy(frame + 1, msg->data, msg->size);
+	} else {
+		if (this->_wbuf.available() < msg->size)
+			this->_wbuf.resize(this->_wbuf.size() + msg->size);
+		memcpy(this->_wbuf.end(), msg->data, msg->size);
+	}
 
 	if (this->_wbuf.size()) {
 		this->_wbuf.extend(full_size);
@@ -229,7 +240,7 @@ int TLSSocket<T>::_post_data(const tll_msg_t *msg, int flags)
 	}
 
 	this->_log.trace("Post {} bytes of data", full_size);
-	auto r = SSL_write(_ssl.get(), frame, full_size);
+	auto r = SSL_write(_ssl.get(), this->_wbuf.end(), full_size);
 	if (r >= 0) {
 		if ((size_t) r == full_size)
 			return 0;
@@ -268,6 +279,16 @@ template <typename T>
 int TLSSocket<T>::_process_pending()
 {
 	this->_log.debug("Check pending data ({} stored)", this->_rbuf.size());
+	if (_frame == Frame::None) {
+		if (!this->_rbuf.size())
+			return EAGAIN;
+		tll_msg_t msg = { .type = TLL_MESSAGE_DATA, .data = this->_rbuf.data(), .size = this->_rbuf.size() };
+		this->_rbuf.done(this->_rbuf.size());
+		this->_dcaps_pending(SSL_pending(_ssl.get()));
+		this->_callback_data(&msg);
+		return 0;
+	}
+
 	using Frame = tll_frame_t;
 	auto frame = this->_rbuf.template dataT<Frame>();
 	if (!frame)
@@ -287,7 +308,7 @@ int TLSSocket<T>::_process_pending()
 	msg.data = this->_rbuf.template dataT<void>(sizeof(Frame), 0);
 	msg.addr = this->_msg_addr;
 	msg.time = this->_timestamp.count();
-	this->rdone(full_size);
+	this->_rbuf.done(full_size);
 	this->_dcaps_pending(this->_rbuf.template dataT<Frame>() || SSL_pending(_ssl.get()));
 	this->_callback_data(&msg);
 	return 0;
