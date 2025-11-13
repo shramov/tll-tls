@@ -55,10 +55,13 @@ struct SSLCommon
 	int level = -1;
 
 	template <typename Reader>
-	int init(const tll::Logger &log, Reader &reader)
+	int init(const tll::Logger &log, Reader &reader, bool client)
 	{
 		_log = log;
-		cert_path = reader.template getT<std::string>("cert");
+		if (client)
+			cert_path = reader.template getT<std::string>("cert", "");
+		else
+			cert_path = reader.template getT<std::string>("cert");
 		pkey_path = reader.template getT<std::string>("key", cert_path);
 		ca_path = reader.template getT<std::string>("ca", "default");
 		level = reader.template getT<unsigned>("level", 2);
@@ -69,14 +72,18 @@ struct SSLCommon
 	int open()
 	{
 		SSLErrbuf ssl_error;
-		if (auto r = load_object<X509>(cert_path); !r)
-			return _log.fail(EINVAL, "Failed to load certificate from {}", cert_path);
-		else
-			cert.reset(r);
-		if (auto r = load_object<EVP_PKEY>(pkey_path); !r)
-			return _log.fail(EINVAL, "Failed to load private key from {}", pkey_path);
-		else
-			pkey.reset(r);
+		if (cert_path.size()) {
+			if (auto r = load_object<X509>(cert_path); !r)
+				return _log.fail(EINVAL, "Failed to load certificate from {}", cert_path);
+			else
+				cert.reset(r);
+		}
+		if (pkey_path.size()) {
+			if (auto r = load_object<EVP_PKEY>(pkey_path); !r)
+				return _log.fail(EINVAL, "Failed to load private key from {}", pkey_path);
+			else
+				pkey.reset(r);
+		}
 
 		ssl_ctx.reset(SSL_CTX_new(TLS_method()));
 		if (!ssl_ctx)
@@ -85,9 +92,9 @@ struct SSLCommon
 		SSL_CTX_set_security_level(ssl_ctx.get(), level);
 		if (ciphers.size() && !SSL_CTX_set_cipher_list(ssl_ctx.get(), ciphers.c_str()))
 			return _log.fail(EINVAL, "Failed to set ciphers list: {}", ssl_error());
-		if (!SSL_CTX_use_certificate(ssl_ctx.get(), cert.get()))
+		if (cert && !SSL_CTX_use_certificate(ssl_ctx.get(), cert.get()))
 			return _log.fail(EINVAL, "Failed to set context certificate: {}", ssl_error());
-		if (!SSL_CTX_use_PrivateKey(ssl_ctx.get(), pkey.get()))
+		if (pkey && !SSL_CTX_use_PrivateKey(ssl_ctx.get(), pkey.get()))
 			return _log.fail(EINVAL, "Failed to set context private key: {}", ssl_error());
 
 		std::error_code ec;

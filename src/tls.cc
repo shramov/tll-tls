@@ -23,7 +23,7 @@ class TLSClient : public tll::channel::TcpClient<TLSClient, TLSSocket<TLSClient>
 
 		auto reader = channel_props_reader(url);
 		_frame = reader.getT("frame", Frame::Std, {{"none", Frame::None}, {"std", Frame::Std}, {"l4m4s8", Frame::Std}});
-		if (_common.init(_log, reader))
+		if (_common.init(_log, reader, true))
 			return _log.fail(EINVAL, "Failed to parse common SSL parameters");
 		if (!reader)
 			return _log.fail(EINVAL, "Invalid url: {}", reader.error());
@@ -71,7 +71,7 @@ class TLSServer : public tll::channel::TcpServer<TLSServer, Term<TLSSocket>>
 
 		auto reader = channel_props_reader(url);
 		_frame = reader.getT("frame", Frame::Std, {{"none", Frame::None}, {"std", Frame::Std}, {"l4m4s8", Frame::Std}});
-		if (_common.init(_log, reader))
+		if (_common.init(_log, reader, false))
 			return _log.fail(EINVAL, "Failed to parse common SSL parameters");
 		if (!reader)
 			return _log.fail(EINVAL, "Invalid url: {}", reader.error());

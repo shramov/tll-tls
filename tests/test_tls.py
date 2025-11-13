@@ -199,3 +199,36 @@ async def test_frame_none(asyncloop):
     assert (m.msgid, m.seq, m.data.tobytes()) == (0, 0, b'abc')
     m = await s.recv()
     assert (m.msgid, m.seq, m.data.tobytes()) == (0, 0, b'def')
+
+def test_nocert(context, tmp_path):
+    c = Accum(f'tls://{tmp_path}/ssl.sock;mode=client;frame=none', name='client', dump='yes', ca='cert/ca.pem', context=context)
+
+    sock = socket.socket(family=socket.AF_UNIX, type=socket.SOCK_STREAM)
+    sock.settimeout(0.1)
+    sock.bind(f'{tmp_path}/ssl.sock')
+    sock.listen(10)
+    sock.setblocking(False)
+
+    c.open()
+    s, _ = sock.accept()
+    s.setblocking(False)
+
+    sslctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    sslctx.load_verify_locations('cert/ca.pem')
+    sslctx.load_cert_chain('cert/server.pem', 'cert/server.key')
+
+    ssock = sslctx.wrap_socket(s, server_side=True, do_handshake_on_connect=False)
+    for _ in range(10):
+        c.process()
+        try:
+            ssock.read()
+        except ssl.SSLWantReadError:
+            pass
+        except ssl.SSLWantWriteError:
+            pass
+
+    assert c.state == c.State.Active
+    assert ssock.getpeercert() == None
+
+    c.post(b'xxx')
+    assert ssock.read() == b'xxx'
