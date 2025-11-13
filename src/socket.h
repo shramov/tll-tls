@@ -10,6 +10,8 @@
 #include <openssl/store.h>
 #include <openssl/x509.h>
 
+#include <filesystem>
+
 #include "tll/tls/bio-nosignal.h"
 #include "scheme/tls.h"
 #include "scheme/tls-client.h"
@@ -58,7 +60,7 @@ struct SSLCommon
 		_log = log;
 		cert_path = reader.template getT<std::string>("cert");
 		pkey_path = reader.template getT<std::string>("key", cert_path);
-		ca_path = reader.template getT<std::string>("ca");
+		ca_path = reader.template getT<std::string>("ca", "default");
 		level = reader.template getT<unsigned>("level", 2);
 		ciphers = reader.template getT<std::string>("ciphers", "");
 		return 0;
@@ -87,8 +89,16 @@ struct SSLCommon
 			return _log.fail(EINVAL, "Failed to set context certificate: {}", ssl_error());
 		if (!SSL_CTX_use_PrivateKey(ssl_ctx.get(), pkey.get()))
 			return _log.fail(EINVAL, "Failed to set context private key: {}", ssl_error());
-		if (!SSL_CTX_load_verify_file(ssl_ctx.get(), ca_path.c_str()))
-			return _log.fail(EINVAL, "Failed to set CA path: {}", ssl_error());
+
+		std::error_code ec;
+		if (ca_path == "default") {
+			if (!SSL_CTX_set_default_verify_paths(ssl_ctx.get()))
+				return _log.fail(EINVAL, "Failed to set default CA paths: {}", ssl_error());
+		} else if (std::filesystem::is_directory(ca_path, ec)) {
+			if (!SSL_CTX_load_verify_dir(ssl_ctx.get(), ca_path.c_str()))
+				return _log.fail(EINVAL, "Failed to set CA path '{}': {}", ca_path, ssl_error());
+		} else if (!SSL_CTX_load_verify_file(ssl_ctx.get(), ca_path.c_str()))
+			return _log.fail(EINVAL, "Failed to set CA file '{}': {}", ca_path, ssl_error());
 
 		SSL_CTX_set_verify(ssl_ctx.get(), SSL_VERIFY_PEER | SSL_VERIFY_CLIENT_ONCE | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, _verify_cb);
 
