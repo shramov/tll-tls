@@ -11,6 +11,7 @@ class TLSClient : public tll::channel::TcpClient<TLSClient, TLSSocket<TLSClient>
 {
 	using Base = tll::channel::TcpClient<TLSClient, TLSSocket<TLSClient>>;
 	SSLCommon _common;
+	bool _enable_sni = true;
 
  public:
 	static constexpr std::string_view param_prefix() { return "tls"; }
@@ -23,10 +24,14 @@ class TLSClient : public tll::channel::TcpClient<TLSClient, TLSSocket<TLSClient>
 
 		auto reader = channel_props_reader(url);
 		_frame = reader.getT("frame", Frame::Std, {{"none", Frame::None}, {"std", Frame::Std}, {"l4m4s8", Frame::Std}});
+		_enable_sni = reader.getT("enable-sni", true);
 		if (_common.init(_log, reader, true))
 			return _log.fail(EINVAL, "Failed to parse common SSL parameters");
 		if (!reader)
 			return _log.fail(EINVAL, "Invalid url: {}", reader.error());
+
+		if (_peer) // TODO: Use _peer_active whan it lands in tagged version of TLL
+			_enable_sni = false;
 
 		_scheme_control.reset(context().scheme_load(tls_client_scheme::scheme_string));
 		if (!_scheme_control.get())
@@ -45,6 +50,11 @@ class TLSClient : public tll::channel::TcpClient<TLSClient, TLSSocket<TLSClient>
 	{
 		if (auto r = _open_ssl(_common.ssl_ctx.get(), true, _frame); r)
 			return r;
+		// TODO: Use _peer_active when it lands in tagged version of TLL
+		if (_enable_sni && !SSL_set_tlsext_host_name(_ssl.get(), _peer->host.c_str()))
+			return this->_log.fail(EINVAL, "Failed to set SNI host '{}': {}", _peer->host, _ssl_error());
+		if (!SSL_connect(_ssl.get()))
+			return this->_log.fail(EINVAL, "Failed to initiate SSL handshake: {}", _ssl_error());
 		_dcaps_poll(tll::dcaps::CPOLLIN);
 		return 0;
 	}

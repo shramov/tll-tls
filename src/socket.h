@@ -218,12 +218,9 @@ int TLSSocket<T>::_open_ssl(SSL_CTX * ctx, bool client, Frame frame)
 	BIO_set_fd(bio, this->internal.fd, 0);
 	SSL_set_bio(_ssl.get(), bio, bio);
 	//BIO_set_close(SSL_get_rbio(_ssl.get()), BIO_NOCLOSE);
-	int r = 0;
 	if (client)
-		r = SSL_connect(_ssl.get());
-	else
-		r = SSL_accept(_ssl.get());
-	if (!r)
+		return 0;
+	if (!SSL_accept(_ssl.get()))
 		return this->_log.fail(EINVAL, "Failed to initiate SSL handshake: {}", _ssl_error());
 	return 0;
 }
