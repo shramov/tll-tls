@@ -96,3 +96,12 @@ BIO_METHOD * tll_tls_bio_nosignal()
 	impl = tmp;
 	return impl;
 }
+
+static void impl_free() __attribute__((destructor));
+
+static void impl_free()
+{
+	if (impl)
+		BIO_meth_free(impl);
+	impl = NULL;
+}
