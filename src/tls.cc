@@ -30,8 +30,11 @@ class TLSClient : public tll::channel::TcpClient<TLSClient, TLSSocket<TLSClient>
 		if (!reader)
 			return _log.fail(EINVAL, "Invalid url: {}", reader.error());
 
-		if (_peer) // TODO: Use _peer_active whan it lands in tagged version of TLL
+		if (!_peer) {
+			// TODO: Use _peer_active whan it lands in tagged version of TLL
+			_log.warning("SNI is disabled if address is passed in open");
 			_enable_sni = false;
+		}
 
 		_scheme_control.reset(context().scheme_load(tls_client_scheme::scheme_string));
 		if (!_scheme_control.get())
