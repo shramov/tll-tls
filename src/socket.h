@@ -21,6 +21,7 @@ namespace tll::tls {
 enum class Frame { None, Std };
 
 struct OpenSSL_delete {
+	void operator ()(BIO *ptr) const { BIO_free(ptr); }
 	void operator ()(EVP_PKEY *ptr) const { EVP_PKEY_free(ptr); }
 	void operator ()(OSSL_STORE_CTX *ptr) const { OSSL_STORE_close(ptr); }
 	void operator ()(SSL *ptr) const { SSL_free(ptr); }
@@ -88,6 +89,7 @@ struct SSLCommon
 		ssl_ctx.reset(SSL_CTX_new(TLS_method()));
 		if (!ssl_ctx)
 			return _log.fail(EINVAL, "Failed to create SSL context: {}", ssl_error());
+		SSL_CTX_set_app_data(ssl_ctx.get(), this);
 		SSL_CTX_set_mode(ssl_ctx.get(), SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
 		SSL_CTX_set_security_level(ssl_ctx.get(), level);
 		if (ciphers.size() && !SSL_CTX_set_cipher_list(ssl_ctx.get(), ciphers.c_str()))
@@ -112,8 +114,25 @@ struct SSLCommon
 		return 0;
 	}
 
-        static int _verify_cb(int preverify_ok, X509_STORE_CTX *x509_ctx)
+        static int _verify_cb(int preverify_ok, X509_STORE_CTX *ctx)
 	{
+		if (preverify_ok)
+			return preverify_ok;
+
+		auto ssl = static_cast<const SSL *>(X509_STORE_CTX_get_ex_data(ctx, SSL_get_ex_data_X509_STORE_CTX_idx()));
+		auto self = static_cast<SSLCommon *>(SSL_CTX_get_app_data(SSL_get_SSL_CTX(ssl)));
+
+		auto err = X509_STORE_CTX_get_error(ctx);
+		auto cert = X509_STORE_CTX_get_current_cert(ctx);
+		std::unique_ptr<BIO, OpenSSL_delete> bio { BIO_new(BIO_s_mem()) };
+		if (X509_NAME_print_ex(bio.get(), X509_get_subject_name(cert), 0, XN_FLAG_ONELINE) == -1) {
+			BIO_reset(bio.get());
+			BIO_puts(bio.get(), "Invalid name");
+		}
+		char * name = nullptr;
+		BIO_get_mem_data(bio.get(), &name);
+
+		self->_log.error("Certificate verification failed: {}\n  certificate: {}", X509_verify_cert_error_string(err), name);
 		return preverify_ok;
 	}
 
