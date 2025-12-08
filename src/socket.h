@@ -311,7 +311,7 @@ int TLSSocket<T>::_process_write()
 template <typename T>
 int TLSSocket<T>::_process_pending()
 {
-	this->_log.debug("Check pending data ({} stored)", this->_rbuf.size());
+	this->_log.trace("Check pending data ({} stored)", this->_rbuf.size());
 	if (_frame == Frame::None) {
 		if (!this->_rbuf.size())
 			return EAGAIN;
@@ -326,7 +326,7 @@ int TLSSocket<T>::_process_pending()
 	auto frame = this->_rbuf.template dataT<Frame>();
 	if (!frame)
 		return EAGAIN;
-	this->_log.debug("Frame available, check for data (size: {}, msgid: {}, seq: {})", frame->size, frame->msgid, frame->seq);
+	this->_log.trace("Frame available, check for data (size: {}, msgid: {}, seq: {})", frame->size, frame->msgid, frame->seq);
 	// Check for pending data
 	const auto full_size = sizeof(Frame) + frame->size;
 	if (this->_rbuf.size() < full_size) {
@@ -360,7 +360,7 @@ int TLSSocket<T>::_process_read()
 		this->channelT()->_on_close();
 		return EAGAIN;
 	} else {
-		this->_log.debug("Got {} bytes of data ({} already stored)", r, this->_rbuf.size());
+		this->_log.trace("Got {} bytes of data ({} already stored)", r, this->_rbuf.size());
 		this->_rbuf.extend(r);
 	}
 
@@ -396,10 +396,10 @@ int TLSSocket<T>::_handle_error(std::string_view op, int r)
 {
 	switch (SSL_get_error(_ssl.get(), r)) {
 	case SSL_ERROR_WANT_READ:
-		this->_log.debug("Want read");
+		this->_log.trace("Want read");
 		return EAGAIN;
 	case SSL_ERROR_WANT_WRITE:
-		this->_log.debug("Want write");
+		this->_log.trace("Want write");
 		this->_update_dcaps(tll::dcaps::CPOLLOUT);
 		return EAGAIN;
 	case SSL_ERROR_ZERO_RETURN:
