@@ -406,7 +406,7 @@ int TLSSocket<T>::_handle_error(std::string_view op, int r)
 		this->close();
 		return 0;
 	case SSL_ERROR_SYSCALL:
-		return this->state_fail(EINVAL, "{} failed, syscall error: {}", op, _ssl_error());
+		return this->state_fail(EINVAL, "{} failed, syscall error: {}", op, strerror(errno));
 	case SSL_ERROR_SSL:
 		return this->state_fail(EINVAL, "{} failed, SSL error: {}", op, _ssl_error());
 	default:
