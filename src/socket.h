@@ -380,7 +380,7 @@ int TLSSocket<T>::_process_handshake()
 	}
 
 	if (SSL_is_init_finished(_ssl.get())) {
-		this->_log.debug("Handshake finished");
+		this->_log.debug("Handshake finished, version {}, cipher {}", SSL_get_version(_ssl.get()), SSL_get_cipher(_ssl.get()));
 		this->state(tll::state::Active);
 		this->_dcaps_pending(SSL_pending(_ssl.get()));
 		this->channelT()->_on_handshake();
