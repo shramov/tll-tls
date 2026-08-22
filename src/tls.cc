@@ -11,7 +11,8 @@ class TLSClient : public tll::channel::TcpClient<TLSClient, TLSSocket<TLSClient>
 {
 	using Base = tll::channel::TcpClient<TLSClient, TLSSocket<TLSClient>>;
 	SSLCommon _common;
-	bool _enable_sni = true;
+	bool _sni_enable = true;
+	std::string _sni_host;
 
  public:
 	static constexpr std::string_view param_prefix() { return "tls"; }
@@ -24,7 +25,8 @@ class TLSClient : public tll::channel::TcpClient<TLSClient, TLSSocket<TLSClient>
 
 		auto reader = channel_props_reader(url);
 		_frame = reader.getT("frame", Frame::Std, {{"none", Frame::None}, {"std", Frame::Std}, {"l4m4s8", Frame::Std}});
-		_enable_sni = reader.getT("enable-sni", true);
+		_sni_enable = reader.getT("enable-sni", true);
+		_sni_host = reader.getT("hostname", std::string{});
 		if (_common.init(_log, reader, true))
 			return _log.fail(EINVAL, "Failed to parse common SSL parameters");
 		if (!reader)
@@ -33,7 +35,7 @@ class TLSClient : public tll::channel::TcpClient<TLSClient, TLSSocket<TLSClient>
 		if (!_peer) {
 			// TODO: Use _peer_active whan it lands in tagged version of TLL
 			_log.warning("SNI is disabled if address is passed in open");
-			_enable_sni = false;
+			_sni_enable = false;
 		}
 
 		_scheme_control.reset(context().scheme_load(tls_client_scheme::scheme_string));
@@ -54,8 +56,11 @@ class TLSClient : public tll::channel::TcpClient<TLSClient, TLSSocket<TLSClient>
 		if (auto r = _open_ssl(_common.ssl_ctx.get(), true, _frame); r)
 			return r;
 		// TODO: Use _peer_active when it lands in tagged version of TLL
-		if (_enable_sni && !SSL_set_tlsext_host_name(_ssl.get(), _peer->host.c_str()))
-			return this->_log.fail(EINVAL, "Failed to set SNI host '{}': {}", _peer->host, _ssl_error());
+		if (_sni_enable) {
+			auto & host = _sni_host.size() ? _sni_host : _peer->host;
+			if (!SSL_set_tlsext_host_name(_ssl.get(), host.c_str()))
+				return this->_log.fail(EINVAL, "Failed to set SNI host '{}': {}", host, _ssl_error());
+		}
 		if (!SSL_connect(_ssl.get()))
 			return this->_log.fail(EINVAL, "Failed to initiate SSL handshake: {}", _ssl_error());
 		_dcaps_poll(tll::dcaps::CPOLLIN);
