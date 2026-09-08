@@ -11,7 +11,7 @@ class TLSClient : public tll::channel::TcpClient<TLSClient, TLSSocket<TLSClient>
 {
 	using Base = tll::channel::TcpClient<TLSClient, TLSSocket<TLSClient>>;
 	SSLCommon _common;
-	bool _sni_enable = true;
+	enum SNI { Disable, Enable, FromInit } _sni_enable = SNI::Enable;
 	std::string _sni_host;
 
  public:
@@ -25,18 +25,11 @@ class TLSClient : public tll::channel::TcpClient<TLSClient, TLSSocket<TLSClient>
 
 		auto reader = channel_props_reader(url);
 		_frame = reader.getT("frame", Frame::Std, {{"none", Frame::None}, {"std", Frame::Std}, {"l4m4s8", Frame::Std}});
-		_sni_enable = reader.getT("enable-sni", true);
-		_sni_host = reader.getT("hostname", std::string{});
+		_sni_enable = reader.getT("sni", SNI::FromInit, {{"enable", SNI::Enable}, {"disable", SNI::Disable}, {"from-init", SNI::FromInit}});
 		if (_common.init(_log, reader, true))
 			return _log.fail(EINVAL, "Failed to parse common SSL parameters");
 		if (!reader)
 			return _log.fail(EINVAL, "Invalid url: {}", reader.error());
-
-		if (!_peer) {
-			// TODO: Use _peer_active whan it lands in tagged version of TLL
-			_log.warning("SNI is disabled if address is passed in open");
-			_sni_enable = false;
-		}
 
 		_scheme_control.reset(context().scheme_load(tls_client_scheme::scheme_string));
 		if (!_scheme_control.get())
@@ -55,12 +48,23 @@ class TLSClient : public tll::channel::TcpClient<TLSClient, TLSSocket<TLSClient>
 	{
 		if (auto r = _open_ssl(_common.ssl_ctx.get(), true, _frame); r)
 			return r;
-		// TODO: Use _peer_active when it lands in tagged version of TLL
-		if (_sni_enable) {
-			auto & host = _sni_host.size() ? _sni_host : _peer->host;
-			if (!SSL_set_tlsext_host_name(_ssl.get(), host.c_str()))
-				return this->_log.fail(EINVAL, "Failed to set SNI host '{}': {}", host, _ssl_error());
+
+		std::string * sni = nullptr;
+		switch (_sni_enable) {
+		case SNI::Enable:
+			sni = &_peer_active.host;
+		case SNI::FromInit:
+			if (_peer)
+				sni = &_peer->host;
+			else
+				sni = &_peer_active.host;
+			break;
+		case SNI::Disable:
+			break;
 		}
+		if (sni && !SSL_set_tlsext_host_name(_ssl.get(), sni->c_str()))
+			return this->_log.fail(EINVAL, "Failed to set SNI host '{}': {}", *sni, _ssl_error());
+
 		if (!SSL_connect(_ssl.get()))
 			return this->_log.fail(EINVAL, "Failed to initiate SSL handshake: {}", _ssl_error());
 		_dcaps_poll(tll::dcaps::CPOLLIN);
