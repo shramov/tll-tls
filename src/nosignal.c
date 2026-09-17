@@ -15,6 +15,7 @@ typedef struct tll_tls_bio_t
 	int fd;
 	unsigned char eof:1;
 	unsigned char close:1;
+	long long * timestamp;
 } tll_tls_bio_t;
 
 static int tll_tls_bio_create(BIO * bio)
@@ -38,10 +39,47 @@ static int tll_tls_bio_destroy(BIO * bio)
 	return 1;
 }
 
+static inline long long _cmsg_timestamp(struct msghdr * msg)
+{
+	long long r = 0;
+	for (struct cmsghdr * cmsg = CMSG_FIRSTHDR(msg); cmsg; cmsg = CMSG_NXTHDR(msg, cmsg)) {
+		if(cmsg->cmsg_level != SOL_SOCKET)
+			continue;
+
+		if (cmsg->cmsg_type == SO_TIMESTAMPING) {
+			struct timespec * ts = (struct timespec *) CMSG_DATA(cmsg);
+			if (ts[2].tv_sec || ts[2].tv_nsec) // Get HW timestamp if available
+				r = 1000000000ll * ts[2].tv_sec + ts[2].tv_nsec;
+			else
+				r = 1000000000ll * ts->tv_sec + ts->tv_nsec;
+		}
+	}
+
+	return r;
+}
+
 static int tll_tls_bio_read(BIO * bio, char * buf, int size)
 {
 	tll_tls_bio_t * data = BIO_get_data(bio);
-	int r = recv(data->fd, buf, size, MSG_NOSIGNAL);
+
+	int r = 0;
+	if (data->timestamp) {
+		union {
+			struct cmsghdr align;
+			char data[256];
+		} cbuf;
+		struct iovec iov = {buf, size};
+		struct msghdr mhdr = {};
+		mhdr.msg_iov = &iov;
+		mhdr.msg_iovlen = 1;
+		mhdr.msg_control = cbuf.data;
+		mhdr.msg_controllen = sizeof(cbuf.data);
+		r = recvmsg(data->fd, &mhdr, MSG_NOSIGNAL);
+		if (r > 0)
+			*data->timestamp = _cmsg_timestamp(&mhdr);
+	} else
+		r = recv(data->fd, buf, size, MSG_NOSIGNAL);
+
 	BIO_clear_retry_flags(bio);
 	if (r < 0 && errno == EAGAIN)
 		BIO_set_retry_read(bio);
@@ -75,6 +113,9 @@ static long tll_tls_bio_ctrl(BIO * bio, int cmd, long larg, void * parg)
 		return data->fd;
 	case BIO_CTRL_EOF: return data->eof;
 	case BIO_CTRL_FLUSH: return 1;
+	case BIO_C_SET_FILE_PTR:
+		data->timestamp = parg;
+		return 1;
 	default: return 0;
 	}
 }
