@@ -46,7 +46,7 @@ class TLSClient : public tll::channel::TcpClient<TLSClient, TLSSocket<TLSClient>
 
 	int _on_connect()
 	{
-		if (auto r = _open_ssl(_common.ssl_ctx.get(), true, _frame); r)
+		if (auto r = _open_ssl(_common.ssl_ctx.get(), true, _frame, _settings); r)
 			return r;
 
 		std::string * sni = nullptr;
@@ -117,7 +117,7 @@ class TLSServer : public tll::channel::TcpServer<TLSServer, Term<TLSSocket>>
 		auto tlsc = tll::channel_cast<Term<TLSSocket>>(c);
 		if (!tlsc)
 			return _log.fail(EINVAL, "Can not cast socket channel to TLSSocket");
-		if (auto r = tlsc->_open_ssl(_common.ssl_ctx.get(), false, _frame); r)
+		if (auto r = tlsc->_open_ssl(_common.ssl_ctx.get(), false, _frame, _settings); r)
 			return r;
 		return Base::_on_accept(c);
 	}

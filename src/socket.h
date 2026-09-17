@@ -184,7 +184,7 @@ class TLSSocket : public tll::channel::TcpSocket<T>
 
 	bool with_ssl() const { return _ssl.get(); }
 
-	int _open_ssl(SSL_CTX * ctx, bool client, Frame frame);
+	int _open_ssl(SSL_CTX * ctx, bool client, Frame frame, const tll::channel::tcp_settings_t &);
 
 	int _post_data(const tll_msg_t *msg, int flags);
 	int _process(long timeout, int flags);
@@ -219,7 +219,7 @@ class TLSSocket : public tll::channel::TcpSocket<T>
 };
 
 template <typename T>
-int TLSSocket<T>::_open_ssl(SSL_CTX * ctx, bool client, Frame frame)
+int TLSSocket<T>::_open_ssl(SSL_CTX * ctx, bool client, Frame frame, const tll::channel::tcp_settings_t &settings)
 {
 
 	_frame = frame;
@@ -234,6 +234,8 @@ int TLSSocket<T>::_open_ssl(SSL_CTX * ctx, bool client, Frame frame)
 	auto bio = BIO_new(tll_tls_bio_nosignal());
 	if (!bio)
 		return this->_log.fail(EINVAL, "Failed to create BIO: {}", _ssl_error());
+	if (settings.timestamping)
+		BIO_set_fp(bio, &this->_timestamp, 0);
 	BIO_set_fd(bio, this->internal.fd, 0);
 	SSL_set_bio(_ssl.get(), bio, bio);
 	//BIO_set_close(SSL_get_rbio(_ssl.get()), BIO_NOCLOSE);
@@ -315,7 +317,7 @@ int TLSSocket<T>::_process_pending()
 	if (_frame == Frame::None) {
 		if (!this->_rbuf.size())
 			return EAGAIN;
-		tll_msg_t msg = { .type = TLL_MESSAGE_DATA, .data = this->_rbuf.data(), .size = this->_rbuf.size() };
+		tll_msg_t msg = { .type = TLL_MESSAGE_DATA, .data = this->_rbuf.data(), .size = this->_rbuf.size(), .time = this->_timestamp.count() };
 		this->_rbuf.done(this->_rbuf.size());
 		this->_dcaps_pending(SSL_pending(_ssl.get()));
 		this->_callback_data(&msg);

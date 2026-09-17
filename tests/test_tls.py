@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # vim: sts=4 sw=4 et
 
+import datetime
 import decorator
 import pytest
 import socket
@@ -232,3 +233,33 @@ def test_nocert(context, tmp_path):
 
     c.post(b'xxx')
     assert ssock.read() == b'xxx'
+
+@asyncloop_run
+async def test_timestamp(asyncloop):
+    common = {'dump': 'yes', 'ca': 'cert/ca.pem', 'timestamping': 'yes'}
+    s = asyncloop.Channel(f'tls://::1:{ports.TCP6};mode=server', name='server', cert='cert/server.pem', key='cert/server.key', **common)
+    c = asyncloop.Channel(f'tls://::1:{ports.TCP6};mode=client', name='client', cert='cert/client.pem', key='cert/client.key', **common)
+
+    s.open()
+    c.open()
+
+    assert (await c.recv_state()) == c.State.Active
+
+    m = await s.recv()
+    assert m.type == m.Type.Control
+    assert s.unpack(m).subject == '/O=tll-tls/OU=test/CN=client'
+    addr = m.addr
+
+    now = datetime.datetime.now()
+    s.post(b'xxx', msgid=10, seq=100, addr=addr)
+    m = await c.recv()
+
+    assert (m.msgid, m.seq, m.data.tobytes()) == (10, 100, b'xxx')
+    assert m.time.datetime > now
+
+    now = datetime.datetime.now()
+    c.post(b'yyy', msgid=20, seq=200)
+    m = await s.recv()
+
+    assert (m.msgid, m.seq, m.data.tobytes()) == (20, 200, b'yyy')
+    assert m.time.datetime > now
